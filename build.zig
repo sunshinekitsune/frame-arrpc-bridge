@@ -10,7 +10,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const frame_exe = b.addExecutable(.{
-        .name = "frame-arrpc-bridge",
+        .name = "frame-arrpc-bridge-aarch64-linux",
         .root_module = b.createModule(.{
             .root_source_file = b.path("frame/src/main.zig"),
             .target = target,

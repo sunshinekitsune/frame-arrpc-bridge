@@ -21,10 +21,8 @@ jobs:
             - name: Build
               run: |
                   mkdir dist
-                  for arch in aarch64 x86_64; do
-                    zig build -Dtarget=${arch}-linux-musl -Doptimize=ReleaseSafe
-                    cp zig-out/bin/frame-arrpc-bridge "dist/frame-arrpc-bridge-${arch}-linux"
-                  done
+                  zig build -Dtarget=aarch64-linux-musl -Doptimize=ReleaseSafe
+                  cp zig-out/bin/frame-arrpc-bridge-aarch64-linux dist/frame-arrpc-bridge-aarch64-linux
 
             - name: Package
               run: |
@@ -32,7 +30,7 @@ jobs:
                   cd dist
                   sha256sum \
                     frame-arrpc-bridge-aarch64-linux \
-                    frame-arrpc-bridge-x86_64-linux \
+                    install.sh \
                     uninstall.sh \
                     frame-arrpc-bridge.service > SHA256SUMS
 
