@@ -8,7 +8,6 @@ fi
 
 REPO="sunshinekitsune/frame-arrpc-bridge"
 RAW_URL="https://raw.githubusercontent.com/$REPO/main/frame"
-BIN_URL="https://github.com/$REPO/releases/latest/download/frame-arrpc-bridge"
 
 DIR="$HOME/.local/share/frame-arrpc-bridge"
 UNIT_DIR="$HOME/.config/systemd/user"
@@ -36,7 +35,12 @@ if [ -f "frame-arrpc-bridge" ] && [ -f "systemd/frame-arrpc-bridge.service" ] &&
 else
     # Repo files
     echo "==> Installing from remote repository files..."
-    curl -fsSL "$BIN_URL" -o "$TMP_DIR/frame-arrpc-bridge"
+    TAG=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+    if [ -z "$TAG" ]; then
+        echo "Error: Could not determine latest release tag from GitHub."
+        exit 1
+    fi
+    curl -fsSL "https://github.com/$REPO/releases/download/${TAG}/frame-arrpc-bridge" -o "$TMP_DIR/frame-arrpc-bridge"
     curl -fsSL "$RAW_URL/uninstall.sh" -o "$TMP_DIR/uninstall.sh"
     curl -fsSL "$RAW_URL/systemd/frame-arrpc-bridge.service" -o "$TMP_DIR/frame-arrpc-bridge.service"
 fi
