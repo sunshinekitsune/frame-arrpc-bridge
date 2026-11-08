@@ -39,12 +39,7 @@ if [ -n "${LOCAL_BINARY:-}" ]; then
     cp "$SRC_DIR/uninstall.sh" "$TMP_DIR/uninstall.sh"
     cp "$SRC_DIR/systemd/$NAME.service" "$TMP_DIR/$NAME.service"
 else
-    case "$(uname -m)" in
-    aarch64 | arm64) ARCH=aarch64 ;;
-    x86_64) ARCH=x86_64 ;;
-    *) die "Unsupported architecture: $(uname -m)" ;;
-    esac
-    ASSET="$NAME-$ARCH-linux"
+    ASSET="$NAME-aarch64-linux"
     BASE="https://github.com/$REPO/releases/latest/download"
 
     echo "==> Downloading latest release ($ARCH)..."
