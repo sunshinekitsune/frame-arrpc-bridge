@@ -42,7 +42,7 @@ else
     ASSET="$NAME-aarch64-linux"
     BASE="https://github.com/$REPO/releases/latest/download"
 
-    echo "==> Downloading latest release ($ARCH)..."
+    echo "==> Downloading latest release..."
     for f in "$ASSET" uninstall.sh "$NAME.service" SHA256SUMS; do
         curl -fsSL "$BASE/$f" -o "$TMP_DIR/$f" || die "Failed to download $f"
     done
