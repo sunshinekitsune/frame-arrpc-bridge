@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/share/frame-arrpc/bin/frame-arrpc-bridge
+ExecStart=%h/.local/share/frame-arrpc-bridge/bin/frame-arrpc-bridge
 Restart=always
 RestartSec=3
 KillMode=control-group

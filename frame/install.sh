@@ -35,7 +35,7 @@ if [ -f "frame-arrpc-bridge" ] && [ -f "systemd/frame-arrpc-bridge.service" ] &&
 else
     # Repo files
     echo "==> Installing from remote repository files..."
-    TAG=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+    TAG=$(basename "$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest")")
     if [ -z "$TAG" ]; then
         echo "Error: Could not determine latest release tag from GitHub."
         exit 1
