@@ -1,63 +1,99 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-if [ "$EUID" -eq 0 ]; then
-    echo "Please run as your normal user instead of root!"
-    exit 1
-fi
+# LOCAL_BINARY=../zig-out/bin/frame-arrpc-bridge ./install.sh
 
 REPO="sunshinekitsune/frame-arrpc-bridge"
-RAW_URL="https://raw.githubusercontent.com/$REPO/main/frame"
+NAME="frame-arrpc-bridge"
 
-DIR="$HOME/.local/share/frame-arrpc-bridge"
-UNIT_DIR="$HOME/.config/systemd/user"
+APP_DIR="$HOME/.local/share/$NAME"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+CONFIG_DIR="$CONFIG_HOME/$NAME"
+UNIT_DIR="$CONFIG_HOME/systemd/user"
 
-# Make sure to reach systemd user bus
+die() {
+    echo "Error: $*" >&2
+    exit 1
+}
+
+[ "$(id -u)" -ne 0 ] || die "Please run as your normal user instead of root!"
+
+# Always talk to the real systemd user session. On the Steam Frame, terminals opened
+# in desktop mode run inside a nested Plasma session whose XDG_RUNTIME_DIR and
+# DBUS_SESSION_BUS_ADDRESS point somewhere else, which makes `systemctl --user` fail.
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-if [ -z "$DBUS_SESSION_BUS_ADDRESS" ] && [ -e "$XDG_RUNTIME_DIR/bus" ]; then
+if [ -S "$XDG_RUNTIME_DIR/bus" ]; then
     export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
 fi
-
-if [ -f "$DIR/uninstall.sh" ]; then
-    echo "==> Existing installation found. Cleaning up prior version..."
-    "$DIR/uninstall.sh" || true
-fi
+systemctl --user show-environment >/dev/null 2>&1 ||
+    die "Can't reach the systemd user session. Run this from a normal login session on the device."
 
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-if [ -f "frame-arrpc-bridge" ] && [ -f "systemd/frame-arrpc-bridge.service" ] && [ -f "uninstall.sh" ]; then
-    # Local files
+echo ""
+if [ -n "${LOCAL_BINARY:-}" ]; then
     echo "==> Installing from local files..."
-    cp frame-arrpc-bridge "$TMP_DIR/"
-    cp uninstall.sh "$TMP_DIR/"
-    cp systemd/frame-arrpc-bridge.service "$TMP_DIR/"
+    SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
+    cp "$LOCAL_BINARY" "$TMP_DIR/$NAME"
+    cp "$SRC_DIR/uninstall.sh" "$TMP_DIR/uninstall.sh"
+    cp "$SRC_DIR/systemd/$NAME.service" "$TMP_DIR/$NAME.service"
 else
-    # Repo files
-    echo "==> Installing from remote repository files..."
-    TAG=$(basename "$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest")")
-    if [ -z "$TAG" ]; then
-        echo "Error: Could not determine latest release tag from GitHub."
-        exit 1
-    fi
-    curl -fsSL "https://github.com/$REPO/releases/download/${TAG}/frame-arrpc-bridge" -o "$TMP_DIR/frame-arrpc-bridge"
-    curl -fsSL "$RAW_URL/uninstall.sh" -o "$TMP_DIR/uninstall.sh"
-    curl -fsSL "$RAW_URL/systemd/frame-arrpc-bridge.service" -o "$TMP_DIR/frame-arrpc-bridge.service"
+    case "$(uname -m)" in
+    aarch64 | arm64) ARCH=aarch64 ;;
+    x86_64) ARCH=x86_64 ;;
+    *) die "Unsupported architecture: $(uname -m)" ;;
+    esac
+    ASSET="$NAME-$ARCH-linux"
+    BASE="https://github.com/$REPO/releases/latest/download"
+
+    echo "==> Downloading latest release ($ARCH)..."
+    for f in "$ASSET" uninstall.sh "$NAME.service" SHA256SUMS; do
+        curl -fsSL "$BASE/$f" -o "$TMP_DIR/$f" || die "Failed to download $f"
+    done
+
+    echo "==> Verifying checksums..."
+    (cd "$TMP_DIR" && sha256sum --ignore-missing --quiet -c SHA256SUMS) ||
+        die "Checksum verification failed"
+    mv "$TMP_DIR/$ASSET" "$TMP_DIR/$NAME"
 fi
 
-mkdir -p "$DIR/bin" "$UNIT_DIR"
-install -m 755 "$TMP_DIR/frame-arrpc-bridge" "$DIR/bin/frame-arrpc-bridge"
-install -m 755 "$TMP_DIR/uninstall.sh" "$DIR/uninstall.sh"
-install -m 644 "$TMP_DIR/frame-arrpc-bridge.service" "$UNIT_DIR/frame-arrpc-bridge.service"
+echo "==> Installing files..."
+systemctl --user stop "$NAME.service" 2>/dev/null || true
 
-echo ""
+mkdir -p "$APP_DIR/bin" "$UNIT_DIR" "$CONFIG_DIR"
+install -m 755 "$TMP_DIR/$NAME" "$APP_DIR/bin/$NAME"
+install -m 755 "$TMP_DIR/uninstall.sh" "$APP_DIR/uninstall.sh"
+install -m 644 "$TMP_DIR/$NAME.service" "$UNIT_DIR/$NAME.service"
+
+if [ ! -f "$CONFIG_DIR/config.json" ]; then
+    cat >"$CONFIG_DIR/config.json" <<'EOF'
+{
+    "port": 1337
+}
+EOF
+fi
+
 echo "==> Registering systemd user service..."
 systemctl --user daemon-reload
-systemctl --user enable --now frame-arrpc-bridge.service
+systemctl --user enable "$NAME.service"
+systemctl --user restart "$NAME.service"
+
+sleep 1
+if ! systemctl --user is-active --quiet "$NAME.service"; then
+    echo "" >&2
+    echo "Installed, but the service failed to start. Check the logs:" >&2
+    echo "    journalctl --user -u $NAME.service -e" >&2
+    exit 1
+fi
 
 echo ""
-echo "==> frame-arrpc-bridge is now installed and active."
+echo "==> $NAME is installed and running."
 echo "    Make sure you have an arRPC server running on your remote PC."
 echo ""
-echo "    View logs: journalctl --user -u frame-arrpc-bridge.service -f"
-echo "    Uninstall: $DIR/uninstall.sh"
+echo "    Config:    $CONFIG_DIR/config.json  (restart the service after editing)"
+echo ""
+echo "    Logs:      journalctl --user -u $NAME.service -f"
+echo ""
+echo "    Update:    re-run installer."
+echo "    Uninstall: $APP_DIR/uninstall.sh"

@@ -1,24 +1,46 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# Uninstall frame-arrpc-bridge. Keeps your config unless you pass --purge.
+set -eu
 
-if [ "$EUID" -eq 0 ]; then
-    echo "Please run as your normal user instead of root!"
+NAME="frame-arrpc-bridge"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+
+if [ "$(id -u)" -eq 0 ]; then
+    echo "Please run as your normal user instead of root!" >&2
     exit 1
 fi
 
+echo ""
+PURGE=0
+read -p "Do you want to purge configuration files? (y/N): " response
+if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+    PURGE=1
+fi
+
+# real systemd
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-if [ -z "$DBUS_SESSION_BUS_ADDRESS" ] && [ -e "$XDG_RUNTIME_DIR/bus" ]; then
+if [ -S "$XDG_RUNTIME_DIR/bus" ]; then
     export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
 fi
 
-echo "==> Stopping and disabling frame-arrpc-bridge.service..."
-systemctl --user disable --now frame-arrpc-bridge.service 2>/dev/null || true
+echo ""
+echo "==> Stopping and disabling $NAME.service..."
+systemctl --user disable --now "$NAME.service" 2>/dev/null || true
 
-rm -f "$HOME/.config/systemd/user/frame-arrpc-bridge.service"
-systemctl --user daemon-reload
-systemctl --user reset-failed frame-arrpc-bridge.service 2>/dev/null || true
+rm -f "$CONFIG_HOME/systemd/user/$NAME.service"
+systemctl --user daemon-reload 2>/dev/null || true
+systemctl --user reset-failed "$NAME.service" 2>/dev/null || true
 
 echo "==> Removing application files..."
-rm -rf "$HOME/.local/share/frame-arrpc-bridge"
+rm -rf "$HOME/.local/share/$NAME"
+
+if [ "$PURGE" -eq 1 ]; then
+    echo "==> Removing config..."
+    rm -rf "$CONFIG_HOME/$NAME"
+fi
 
 echo ""
-echo "==> frame-arrpc-bridge has been uninstalled."
+echo "==> $NAME has been uninstalled."
+if [ "$PURGE" -eq 0 ] && [ -d "$CONFIG_HOME/$NAME" ]; then
+    echo "    Your config was kept at $CONFIG_HOME/$NAME (use --purge to remove it)."
+fi

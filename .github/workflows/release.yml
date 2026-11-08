@@ -1,0 +1,43 @@
+# Save as .github/workflows/release.yml
+# Cut a release with:  git tag v0.1.0 && git push --tags
+name: Release
+
+on:
+    push:
+        tags: ["v*"]
+
+permissions:
+    contents: write
+
+jobs:
+    release:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: mlugg/setup-zig@v2
+              with:
+                  version: 0.17.0
+
+            - name: Build
+              run: |
+                  mkdir dist
+                  for arch in aarch64 x86_64; do
+                    zig build -Dtarget=${arch}-linux-musl -Doptimize=ReleaseSafe
+                    cp zig-out/bin/frame-arrpc-bridge "dist/frame-arrpc-bridge-${arch}-linux"
+                  done
+
+            - name: Package
+              run: |
+                  cp frame/install.sh frame/uninstall.sh frame/systemd/frame-arrpc-bridge.service dist/
+                  cd dist
+                  sha256sum \
+                    frame-arrpc-bridge-aarch64-linux \
+                    frame-arrpc-bridge-x86_64-linux \
+                    uninstall.sh \
+                    frame-arrpc-bridge.service > SHA256SUMS
+
+            - name: Publish
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
