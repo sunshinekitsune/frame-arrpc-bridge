@@ -43,14 +43,14 @@ pub const App = struct {
             if (self.clients.count() == 1) "" else "s",
         });
 
-        // Replay cached presence to new client once handshake has flushed
+        // Replay cached presence to new client without triggering websocket.zig's afterInit check
         if (self.activities.count() > 0) {
             const CatchUp = struct {
                 app: *App,
                 c: *ws.Conn,
 
                 fn run(ctx: @This()) void {
-                    std.Io.sleep(ctx.app.io, std.Io.Duration.fromMilliseconds(15), .awake) catch {};
+                    std.Io.sleep(ctx.app.io, std.Io.Duration.fromMilliseconds(25), .awake) catch {};
 
                     ctx.app.mutex.lockUncancelable(ctx.app.io);
                     defer ctx.app.mutex.unlock(ctx.app.io);
@@ -66,6 +66,19 @@ pub const App = struct {
             if (std.Thread.spawn(.{}, CatchUp.run, .{CatchUp{ .app = self, .c = conn }})) |thread| {
                 thread.detach();
             } else |_| {}
+        }
+    }
+
+    /// Called synchronously right after the 101 Switching Protocols response has flushed.
+    pub fn replayActivities(self: *App, conn: *ws.Conn) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
+        if (!self.clients.contains(conn)) return;
+
+        var it = self.activities.valueIterator();
+        while (it.next()) |val| {
+            conn.write(val.*) catch {};
         }
     }
 
@@ -91,7 +104,6 @@ pub const App = struct {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
 
-        // Check if message updates or clears a socketId
         if (std.json.parseFromSlice(std.json.Value, arena.allocator(), text, .{}) catch null) |p| {
             if (p.value == .object) {
                 const obj = p.value.object;
@@ -163,7 +175,9 @@ pub const LocalHandler = struct {
         try app.addClient(conn);
         return .{ .app = app, .conn = conn };
     }
+
     pub fn clientMessage(_: *LocalHandler, _: []const u8) !void {}
+
     pub fn close(self: *LocalHandler) void {
         self.app.removeClient(self.conn);
     }

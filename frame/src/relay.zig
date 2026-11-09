@@ -21,7 +21,7 @@ pub fn supervisorWorker(
         const target_ip: ?[]const u8 = if (app.config.remote_host_override) |override|
             app.allocator.dupe(u8, override) catch null
         else
-            discovery.findStreamPeer(app.allocator, app.io, STREAM_PROCESS) catch null;
+            discovery.findStreamPeer(app.allocator, app.io, STREAM_PROCESS, current_target) catch null;
 
         defer if (target_ip) |ip| app.allocator.free(ip);
 
@@ -99,7 +99,7 @@ fn relaySession(
     defer app.allocator.free(host_hdr);
 
     try client.handshake("/", .{
-        .timeout_ms = 2000,
+        .timeout_ms = 3000,
         .headers = host_hdr,
     });
 
@@ -107,38 +107,36 @@ fn relaySession(
     quiet.* = false;
     std.log.info("Connected to arRPC at {s}:{d}", .{ ip, port });
 
-    const poll_ms = app.config.poll_interval_s * 1000;
-    const read_timeout_ms: u32 = @min(1000, @max(250, poll_ms / 2));
-    try client.readTimeout(read_timeout_ms);
+    const poll_duration = std.Io.Duration.fromSeconds(app.config.poll_interval_s);
+    try client.readTimeout(1000);
 
-    var elapsed_poll_ms: u32 = 0;
+    var last_poll = std.Io.Clock.now(.awake, app.io);
 
     while (running.load(.seq_cst)) {
-        const message = (try client.read()) orelse {
-            // Read tick expired without data. Check shutdown flag immediately.
-            if (!running.load(.seq_cst)) return;
+        const now = std.Io.Clock.now(.awake, app.io);
+        if (last_poll.durationTo(now).toNanoseconds() >= poll_duration.toNanoseconds()) {
+            last_poll = now;
 
-            elapsed_poll_ms += read_timeout_ms;
-            if (elapsed_poll_ms >= poll_ms) {
-                elapsed_poll_ms = 0;
+            if (app.config.remote_host_override == null) {
+                const current_peer = discovery.findStreamPeer(app.allocator, app.io, STREAM_PROCESS, ip) catch null;
+                defer if (current_peer) |p| app.allocator.free(p);
 
-                // If vrlink discovery, verify stream is still up
-                if (app.config.remote_host_override == null) {
-                    const current_peer = discovery.findStreamPeer(app.allocator, app.io, STREAM_PROCESS) catch null;
-                    defer if (current_peer) |p| app.allocator.free(p);
-
-                    if (current_peer == null or !std.mem.eql(u8, current_peer.?, ip)) {
-                        std.log.info("vrlink stream ended", .{});
-                        return;
-                    }
+                if (current_peer == null or !std.mem.eql(u8, current_peer.?, ip)) {
+                    std.log.info("vrlink stream target changed or ended", .{});
+                    return;
                 }
             }
+        }
+
+        const maybe_message = client.read() catch |err| {
+            return err;
+        };
+
+        const message = maybe_message orelse {
+            // Read tick expired without data; loop around to evaluate shutdown flag and peer checks
             continue;
         };
         defer client.done(message);
-
-        // Active game RPC traffic confirms the connection is alive; reset timer
-        elapsed_poll_ms = 0;
 
         switch (message.type) {
             .text => try app.onUpstreamMessage(message.data),
