@@ -7,7 +7,7 @@ pub const App = struct {
     io: std.Io,
     config: Config,
     mutex: std.Io.Mutex = .init,
-    clients: std.AutoArrayHashMap(*ws.Conn, void),
+    clients: std.AutoHashMap(*ws.Conn, void),
     activities: std.StringHashMap([]const u8),
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, config: Config) App {
@@ -15,7 +15,7 @@ pub const App = struct {
             .allocator = allocator,
             .io = io,
             .config = config,
-            .clients = std.AutoArrayHashMap(*ws.Conn, void).init(allocator),
+            .clients = std.AutoHashMap(*ws.Conn, void).init(allocator),
             .activities = std.StringHashMap([]const u8).init(allocator),
         };
     }
@@ -43,10 +43,29 @@ pub const App = struct {
             if (self.clients.count() == 1) "" else "s",
         });
 
-        // Catch up newly connected Rich Presence client with currently cached presence
-        var it = self.activities.valueIterator();
-        while (it.next()) |val| {
-            conn.write(val.*) catch {};
+        // Replay cached presence to new client once handshake has flushed
+        if (self.activities.count() > 0) {
+            const CatchUp = struct {
+                app: *App,
+                c: *ws.Conn,
+
+                fn run(ctx: @This()) void {
+                    std.Io.sleep(ctx.app.io, std.Io.Duration.fromMilliseconds(15), .awake) catch {};
+
+                    ctx.app.mutex.lockUncancelable(ctx.app.io);
+                    defer ctx.app.mutex.unlock(ctx.app.io);
+
+                    if (!ctx.app.clients.contains(ctx.c)) return;
+
+                    var it = ctx.app.activities.valueIterator();
+                    while (it.next()) |val| {
+                        ctx.c.write(val.*) catch {};
+                    }
+                }
+            };
+            if (std.Thread.spawn(.{}, CatchUp.run, .{CatchUp{ .app = self, .c = conn }})) |thread| {
+                thread.detach();
+            } else |_| {}
         }
     }
 
@@ -54,13 +73,14 @@ pub const App = struct {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
-        _ = self.clients.swapRemove(conn);
+        _ = self.clients.remove(conn);
         std.log.info("Vesktop disconnected ({d} left)", .{self.clients.count()});
     }
 
     fn broadcastLocked(self: *App, text: []const u8) void {
-        for (self.clients.keys()) |conn| {
-            conn.write(text) catch {};
+        var it = self.clients.keyIterator();
+        while (it.next()) |conn_ptr| {
+            conn_ptr.*.write(text) catch {};
         }
     }
 
@@ -140,10 +160,8 @@ pub const LocalHandler = struct {
     conn: *ws.Conn,
 
     pub fn init(_: *ws.Handshake, conn: *ws.Conn, app: *App) !LocalHandler {
+        try app.addClient(conn);
         return .{ .app = app, .conn = conn };
-    }
-    pub fn afterInit(self: *LocalHandler) !void {
-        try self.app.addClient(self.conn);
     }
     pub fn clientMessage(_: *LocalHandler, _: []const u8) !void {}
     pub fn close(self: *LocalHandler) void {
