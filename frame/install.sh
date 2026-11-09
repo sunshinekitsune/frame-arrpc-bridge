@@ -64,7 +64,10 @@ install -m 644 "$TMP_DIR/$NAME.service" "$UNIT_DIR/$NAME.service"
 if [ ! -f "$CONFIG_DIR/config.json" ]; then
     cat >"$CONFIG_DIR/config.json" <<'EOF'
 {
-    "port": 1337
+    "webrichpresence_port": 1337,
+    "remote_arrpc_port": 1337,
+    "remote_host_override": null,
+    "poll_interval_s": 6
 }
 EOF
 fi

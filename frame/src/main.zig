@@ -1,47 +1,60 @@
 const std = @import("std");
 const ws = @import("websocket");
+const config = @import("config.zig");
+const state = @import("state.zig");
+const relay = @import("relay.zig");
 
-const app_name = "frame-arrpc-bridge";
+var global_server: ?*ws.Server(state.LocalHandler) = null;
+var running: std.atomic.Value(bool) = .init(true);
 
-const Config = struct {
-    port: u16 = 1337,
-};
-
-pub fn main(init: std.process.Init) !void {
-    const config = try loadConfig(init);
-    std.log.info("Steam Frame Bridge says hi (port {d})", .{config.port});
-
-    while (true) {
-        try std.Io.sleep(init.io, std.Io.Duration.fromSeconds(3600), .awake);
+fn onSignal(_: std.posix.SIG) callconv(.c) void {
+    running.store(false, .seq_cst);
+    if (global_server) |s| {
+        s.stop();
     }
 }
 
-fn loadConfig(init: std.process.Init) !Config {
-    const gpa = init.gpa;
-    const path = if (init.environ_map.get("XDG_CONFIG_HOME")) |dir|
-        try std.fmt.allocPrint(gpa, "{s}/{s}/config.json", .{ dir, app_name })
-    else if (init.environ_map.get("HOME")) |home|
-        try std.fmt.allocPrint(gpa, "{s}/.config/{s}/config.json", .{ home, app_name })
-    else
-        return .{};
-    defer gpa.free(path);
+pub fn main(init: std.process.Init) !void {
+    var cfg_arena = std.heap.ArenaAllocator.init(init.gpa);
+    defer cfg_arena.deinit();
 
-    const data = std.Io.Dir.cwd().readFileAlloc(init.io, path, gpa, .limited(64 * 1024)) catch |err| switch (err) {
-        error.FileNotFound => {
-            std.log.info("no config at {s}, using defaults", .{path});
-            return .{};
-        },
-        else => {
-            std.log.err("can't read {s}: {s}", .{ path, @errorName(err) });
-            return err;
-        },
-    };
-    defer gpa.free(data);
+    const cfg = config.load(init, cfg_arena.allocator());
 
-    const parsed = std.json.parseFromSlice(Config, gpa, data, .{}) catch |err| {
-        std.log.err("invalid config {s}: {s}", .{ path, @errorName(err) });
-        return err;
+    // Register signal handlers for systemd shutdown
+    var act: std.posix.Sigaction = .{
+        .handler = .{ .handler = onSignal },
+        .mask = std.posix.sigemptyset(),
+        .flags = 0,
     };
-    defer parsed.deinit();
-    return parsed.value;
+    std.posix.sigaction(.INT, &act, null);
+    std.posix.sigaction(.TERM, &act, null);
+
+    var app = state.App.init(init.gpa, init.io, cfg);
+    defer app.deinit();
+
+    var server = try ws.Server(state.LocalHandler).init(init.io, init.gpa, .{
+        .port = cfg.webrichpresence_port,
+        .address = "127.0.0.1",
+        .handshake = .{ .timeout = 3, .max_size = 1024, .max_headers = 0 },
+    });
+    defer server.deinit();
+
+    global_server = &server;
+    defer global_server = null;
+
+    std.log.info("Listening on 127.0.0.1:{d}", .{cfg.webrichpresence_port});
+    if (cfg.remote_host_override) |override| {
+        std.log.info("Remote host override: {s}:{d}", .{ override, cfg.remote_arrpc_port });
+    }
+
+    const worker = try std.Thread.spawn(.{}, relay.supervisorWorker, .{ &app, &server, &running });
+
+    server.listen(&app) catch |err| {
+        std.log.err("server.listen error: {s}", .{@errorName(err)});
+    };
+
+    running.store(false, .seq_cst);
+    worker.join();
+
+    std.log.info("Daemon exited cleanly", .{});
 }
